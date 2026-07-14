@@ -8,13 +8,25 @@ uses
   FMX.Types, FMX.Controls, FMX.Forms, FMX.Graphics, FMX.Dialogs;
 
 type
-  TLineKind = (lkNone, lkHorizontal, lkVertical);
+  TBoardStyle = (bsSquares, bsHexagons);
 
   TMoveTarget = record
-    Kind: TLineKind;
-    Row: Integer;
-    Col: Integer;
+    EdgeIndex: Integer;
     Distance: Single;
+  end;
+
+  TBoardEdge = record
+    Dot1: Integer;
+    Dot2: Integer;
+    Owner: Integer;
+  end;
+
+  TBoardCell = record
+    EdgeCount: Integer;
+    Edges: array[0..5] of Integer;
+    Dots: array[0..5] of Integer;
+    Owner: Integer;
+    Center: TPointF;
   end;
 
   TForm51 = class(TForm)
@@ -24,41 +36,51 @@ type
     MaxDotCount = 8;
     PlayerCount = 2;
   private
-    FHorizontalLines: array[0..MaxDotCount - 1, 0..MaxDotCount - 2] of Integer;
-    FVerticalLines: array[0..MaxDotCount - 2, 0..MaxDotCount - 1] of Integer;
-    FBoxOwners: array[0..MaxDotCount - 2, 0..MaxDotCount - 2] of Integer;
+    FDots: array of TPointF;
+    FEdges: array of TBoardEdge;
+    FCells: array of TBoardCell;
     FCurrentPlayer: Integer;
     FDotCount: Integer;
     FBoxCount: Integer;
+    FBoardStyle: TBoardStyle;
     FScores: array[1..PlayerCount] of Integer;
     FNewGameRect: TRectF;
     FModeRect: TRectF;
     FSmallGridRect: TRectF;
     FMediumGridRect: TRectF;
     FLargeGridRect: TRectF;
+    FSquareStyleRect: TRectF;
+    FHexStyleRect: TRectF;
     FPlayAgainstAI: Boolean;
     FAITimer: TTimer;
+    function AddDot(const APoint: TPointF): Integer;
+    function AddEdge(const ADot1, ADot2: Integer): Integer;
     function BoardRect: TRectF;
     function CellSize: Single;
-    function DotPoint(const ARow, ACol: Integer): TPointF;
+    function CellSidesClaimed(const ACellIndex: Integer; const AMove: TMoveTarget): Integer;
+    function CountCompletedCellsForMove(const AMove: TMoveTarget): Integer;
+    function DistanceToSegment(const APoint, AStart, AEnd: TPointF): Single;
+    function DotPoint(const ADotIndex: Integer): TPointF;
+    function FindAIMove(out AMove: TMoveTarget): Boolean;
+    function FindMoveAt(const APoint: TPointF; out AMove: TMoveTarget): Boolean;
     function IsAITurn: Boolean;
     function IsGameOver: Boolean;
-    function IsLineClaimed(const AKind: TLineKind; const ARow, ACol: Integer): Boolean;
     function LineAlreadyClaimed(const AMove: TMoveTarget): Boolean;
-    function FindMoveAt(const APoint: TPointF; out AMove: TMoveTarget): Boolean;
-    function CountBoxSides(const ARow, ACol: Integer; const AMove: TMoveTarget): Integer;
-    function CountCompletedBoxesForMove(const AMove: TMoveTarget): Integer;
-    function MoveCreatesThreeSidedBox(const AMove: TMoveTarget): Boolean;
-    function FindAIMove(out AMove: TMoveTarget): Boolean;
+    function MoveCreatesAlmostCompleteCell(const AMove: TMoveTarget): Boolean;
     function ClaimLine(const AMove: TMoveTarget): Integer;
-    function TryCompleteBox(const ARow, ACol: Integer): Boolean;
+    function TryCompleteCell(const ACellIndex: Integer): Boolean;
     procedure AITimer(Sender: TObject);
+    procedure BuildBoard;
+    procedure BuildHexBoard;
+    procedure BuildSquareBoard;
     procedure DrawBoard;
     procedure DrawButton(const ARect: TRectF; const AText: string; const ASelected: Boolean);
+    procedure DrawCellFill(const ACell: TBoardCell);
     procedure DrawScoreboard;
     procedure FormPaint(Sender: TObject; Canvas: TCanvas; const ARect: TRectF);
     procedure NewGame;
     procedure QueueAITurn;
+    procedure SetBoardStyle(const AStyle: TBoardStyle);
     procedure SetGridSize(const ADotCount: Integer);
     procedure SwitchPlayer;
   public
@@ -89,13 +111,14 @@ constructor TForm51.Create(AOwner: TComponent);
 begin
   inherited;
   Caption := 'Join the Dots';
-  Width := 820;
-  Height := 740;
+  Width := 860;
+  Height := 760;
   OnPaint := FormPaint;
   Randomize;
 
   FDotCount := MediumDotCount;
   FBoxCount := FDotCount - 1;
+  FBoardStyle := bsSquares;
   FPlayAgainstAI := True;
 
   FAITimer := TTimer.Create(Self);
@@ -112,6 +135,35 @@ begin
   inherited;
 end;
 
+function TForm51.AddDot(const APoint: TPointF): Integer;
+var
+  I: Integer;
+begin
+  for I := 0 to High(FDots) do
+    if (Abs(FDots[I].X - APoint.X) < 0.0001) and (Abs(FDots[I].Y - APoint.Y) < 0.0001) then
+      Exit(I);
+
+  Result := Length(FDots);
+  SetLength(FDots, Result + 1);
+  FDots[Result] := APoint;
+end;
+
+function TForm51.AddEdge(const ADot1, ADot2: Integer): Integer;
+var
+  I: Integer;
+begin
+  for I := 0 to High(FEdges) do
+    if ((FEdges[I].Dot1 = ADot1) and (FEdges[I].Dot2 = ADot2))
+      or ((FEdges[I].Dot1 = ADot2) and (FEdges[I].Dot2 = ADot1)) then
+      Exit(I);
+
+  Result := Length(FEdges);
+  SetLength(FEdges, Result + 1);
+  FEdges[Result].Dot1 := ADot1;
+  FEdges[Result].Dot2 := ADot2;
+  FEdges[Result].Owner := 0;
+end;
+
 function TForm51.BoardRect: TRectF;
 var
   AvailableWidth: Single;
@@ -121,26 +173,169 @@ var
   TopPos: Single;
 begin
   AvailableWidth := Max(240, ClientWidth - 80);
-  AvailableHeight := Max(240, ClientHeight - 260);
+  AvailableHeight := Max(240, ClientHeight - 280);
   Size := Min(AvailableWidth, AvailableHeight);
   LeftPos := (ClientWidth - Size) / 2;
-  TopPos := 205 + (AvailableHeight - Size) / 2;
+  TopPos := 225 + (AvailableHeight - Size) / 2;
   Result := RectF(LeftPos, TopPos, LeftPos + Size, TopPos + Size);
 end;
 
 function TForm51.CellSize: Single;
 begin
-  Result := BoardRect.Width / FBoxCount;
+  Result := BoardRect.Width / Max(1, FBoxCount);
 end;
 
-function TForm51.DotPoint(const ARow, ACol: Integer): TPointF;
+function TForm51.DotPoint(const ADotIndex: Integer): TPointF;
 var
   R: TRectF;
-  Step: Single;
 begin
   R := BoardRect;
-  Step := R.Width / FBoxCount;
-  Result := PointF(R.Left + ACol * Step, R.Top + ARow * Step);
+  Result := PointF(R.Left + FDots[ADotIndex].X * R.Width, R.Top + FDots[ADotIndex].Y * R.Height);
+end;
+
+function TForm51.DistanceToSegment(const APoint, AStart, AEnd: TPointF): Single;
+var
+  DX: Single;
+  DY: Single;
+  LenSquared: Single;
+  T: Single;
+  Projection: TPointF;
+begin
+  DX := AEnd.X - AStart.X;
+  DY := AEnd.Y - AStart.Y;
+  LenSquared := DX * DX + DY * DY;
+  if LenSquared = 0 then
+    Exit(Sqrt(Sqr(APoint.X - AStart.X) + Sqr(APoint.Y - AStart.Y)));
+
+  T := ((APoint.X - AStart.X) * DX + (APoint.Y - AStart.Y) * DY) / LenSquared;
+  T := EnsureRange(T, 0, 1);
+  Projection := PointF(AStart.X + T * DX, AStart.Y + T * DY);
+  Result := Sqrt(Sqr(APoint.X - Projection.X) + Sqr(APoint.Y - Projection.Y));
+end;
+
+procedure TForm51.BuildBoard;
+begin
+  SetLength(FDots, 0);
+  SetLength(FEdges, 0);
+  SetLength(FCells, 0);
+
+  case FBoardStyle of
+    bsSquares:
+      BuildSquareBoard;
+    bsHexagons:
+      BuildHexBoard;
+  end;
+end;
+
+procedure TForm51.BuildSquareBoard;
+var
+  Row: Integer;
+  Col: Integer;
+  DotIndex: Integer;
+  CellIndex: Integer;
+begin
+  SetLength(FDots, FDotCount * FDotCount);
+  for Row := 0 to FDotCount - 1 do
+    for Col := 0 to FDotCount - 1 do
+    begin
+      DotIndex := Row * FDotCount + Col;
+      FDots[DotIndex] := PointF(Col / FBoxCount, Row / FBoxCount);
+    end;
+
+  SetLength(FCells, FBoxCount * FBoxCount);
+  for Row := 0 to FBoxCount - 1 do
+    for Col := 0 to FBoxCount - 1 do
+    begin
+      CellIndex := Row * FBoxCount + Col;
+      FCells[CellIndex].EdgeCount := 4;
+      FCells[CellIndex].Dots[0] := Row * FDotCount + Col;
+      FCells[CellIndex].Dots[1] := Row * FDotCount + Col + 1;
+      FCells[CellIndex].Dots[2] := (Row + 1) * FDotCount + Col + 1;
+      FCells[CellIndex].Dots[3] := (Row + 1) * FDotCount + Col;
+      FCells[CellIndex].Edges[0] := AddEdge(FCells[CellIndex].Dots[0], FCells[CellIndex].Dots[1]);
+      FCells[CellIndex].Edges[1] := AddEdge(FCells[CellIndex].Dots[1], FCells[CellIndex].Dots[2]);
+      FCells[CellIndex].Edges[2] := AddEdge(FCells[CellIndex].Dots[2], FCells[CellIndex].Dots[3]);
+      FCells[CellIndex].Edges[3] := AddEdge(FCells[CellIndex].Dots[3], FCells[CellIndex].Dots[0]);
+      FCells[CellIndex].Owner := 0;
+      FCells[CellIndex].Center := PointF((Col + 0.5) / FBoxCount, (Row + 0.5) / FBoxCount);
+    end;
+end;
+
+procedure TForm51.BuildHexBoard;
+type
+  THexCellPoints = record
+    Vertices: array[0..5] of TPointF;
+    Center: TPointF;
+  end;
+var
+  RawCells: array of THexCellPoints;
+  Row: Integer;
+  Col: Integer;
+  I: Integer;
+  CellIndex: Integer;
+  DotIndex1: Integer;
+  DotIndex2: Integer;
+  MinX: Single;
+  MaxX: Single;
+  MinY: Single;
+  MaxY: Single;
+  Center: TPointF;
+  Angle: Single;
+  NormalizedPoint: TPointF;
+begin
+  SetLength(RawCells, FBoxCount * FBoxCount);
+  MinX := MaxSingle;
+  MinY := MaxSingle;
+  MaxX := -MaxSingle;
+  MaxY := -MaxSingle;
+
+  for Row := 0 to FBoxCount - 1 do
+    for Col := 0 to FBoxCount - 1 do
+    begin
+      CellIndex := Row * FBoxCount + Col;
+      Center := PointF(1 + Col * 1.5, Sqrt(3) / 2 + Row * Sqrt(3));
+      if Odd(Col) then
+        Center.Y := Center.Y + Sqrt(3) / 2;
+      RawCells[CellIndex].Center := Center;
+
+      MinX := Min(MinX, Center.X);
+      MaxX := Max(MaxX, Center.X);
+      MinY := Min(MinY, Center.Y);
+      MaxY := Max(MaxY, Center.Y);
+
+      for I := 0 to 5 do
+      begin
+        Angle := DegToRad(I * 60);
+        RawCells[CellIndex].Vertices[I] := PointF(Center.X + Cos(Angle), Center.Y + Sin(Angle));
+        MinX := Min(MinX, RawCells[CellIndex].Vertices[I].X);
+        MaxX := Max(MaxX, RawCells[CellIndex].Vertices[I].X);
+        MinY := Min(MinY, RawCells[CellIndex].Vertices[I].Y);
+        MaxY := Max(MaxY, RawCells[CellIndex].Vertices[I].Y);
+      end;
+    end;
+
+  SetLength(FCells, Length(RawCells));
+  for CellIndex := 0 to High(RawCells) do
+  begin
+    FCells[CellIndex].EdgeCount := 6;
+    FCells[CellIndex].Owner := 0;
+    FCells[CellIndex].Center := PointF((RawCells[CellIndex].Center.X - MinX) / (MaxX - MinX),
+      (RawCells[CellIndex].Center.Y - MinY) / (MaxY - MinY));
+
+    for I := 0 to 5 do
+    begin
+      NormalizedPoint := PointF((RawCells[CellIndex].Vertices[I].X - MinX) / (MaxX - MinX),
+        (RawCells[CellIndex].Vertices[I].Y - MinY) / (MaxY - MinY));
+      FCells[CellIndex].Dots[I] := AddDot(NormalizedPoint);
+    end;
+
+    for I := 0 to 5 do
+    begin
+      DotIndex1 := FCells[CellIndex].Dots[I];
+      DotIndex2 := FCells[CellIndex].Dots[(I + 1) mod 6];
+      FCells[CellIndex].Edges[I] := AddEdge(DotIndex1, DotIndex2);
+    end;
+  end;
 end;
 
 procedure TForm51.DrawButton(const ARect: TRectF; const AText: string; const ASelected: Boolean);
@@ -168,7 +363,7 @@ var
   PlayerText: string;
   I: Integer;
 begin
-  HeaderRect := RectF(32, 24, ClientWidth - 32, 185);
+  HeaderRect := RectF(32, 24, ClientWidth - 32, 205);
 
   Canvas.Font.Size := 28;
   Canvas.Font.Style := [TFontStyle.fsBold];
@@ -220,6 +415,8 @@ begin
   FSmallGridRect := RectF(32, 144, 105, 180);
   FMediumGridRect := RectF(113, 144, 203, 180);
   FLargeGridRect := RectF(211, 144, 284, 180);
+  FSquareStyleRect := RectF(315, 144, 403, 180);
+  FHexStyleRect := RectF(411, 144, 499, 180);
 
   DrawButton(FNewGameRect, 'New game', False);
   if FPlayAgainstAI then
@@ -229,18 +426,55 @@ begin
   DrawButton(FSmallGridRect, 'Small', FDotCount = MinDotCount);
   DrawButton(FMediumGridRect, 'Medium', FDotCount = MediumDotCount);
   DrawButton(FLargeGridRect, 'Large', FDotCount = MaxDotCount);
+  DrawButton(FSquareStyleRect, 'Squares', FBoardStyle = bsSquares);
+  DrawButton(FHexStyleRect, 'Hexes', FBoardStyle = bsHexagons);
+end;
+
+procedure TForm51.DrawCellFill(const ACell: TBoardCell);
+var
+  Path: TPathData;
+  I: Integer;
+  P: TPointF;
+begin
+  if ACell.Owner = 0 then
+    Exit;
+
+  Path := TPathData.Create;
+  try
+    P := DotPoint(ACell.Dots[0]);
+    Path.MoveTo(P);
+    for I := 1 to ACell.EdgeCount - 1 do
+    begin
+      P := DotPoint(ACell.Dots[I]);
+      Path.LineTo(P);
+    end;
+    Path.ClosePath;
+
+    Canvas.Fill.Color := PlayerColors[ACell.Owner] and $2FFFFFFF;
+    Canvas.FillPath(Path, 1);
+    Canvas.Stroke.Color := PlayerColors[ACell.Owner];
+    Canvas.Stroke.Thickness := 1;
+    Canvas.DrawPath(Path, 0.35);
+  finally
+    Path.Free;
+  end;
+
+  Canvas.Font.Size := Max(13, CellSize * 0.22);
+  Canvas.Font.Style := [TFontStyle.fsBold];
+  Canvas.Fill.Color := PlayerColors[ACell.Owner];
+  P := PointF(BoardRect.Left + ACell.Center.X * BoardRect.Width, BoardRect.Top + ACell.Center.Y * BoardRect.Height);
+  Canvas.FillText(RectF(P.X - 18, P.Y - 14, P.X + 18, P.Y + 14), IntToStr(ACell.Owner), False, 1, [],
+    TTextAlign.Center, TTextAlign.Center);
 end;
 
 procedure TForm51.DrawBoard;
 var
   R: TRectF;
-  Row: Integer;
-  Col: Integer;
+  I: Integer;
   Center: TPointF;
-  Owner: Integer;
+  DotRadius: Single;
   P1: TPointF;
   P2: TPointF;
-  DotRadius: Single;
 begin
   R := BoardRect;
   Canvas.Fill.Color := BoardBackgroundColor;
@@ -251,60 +485,37 @@ begin
   Canvas.Fill.Color := $FFFFFFFF;
   Canvas.FillRect(RectF(R.Left - 18, R.Top - 18, R.Right + 18, R.Bottom + 18), 8, 8, [], 1);
 
-  for Row := 0 to FBoxCount - 1 do
-    for Col := 0 to FBoxCount - 1 do
-    begin
-      Owner := FBoxOwners[Row, Col];
-      if Owner > 0 then
-      begin
-        P1 := DotPoint(Row, Col);
-        P2 := DotPoint(Row + 1, Col + 1);
-        Canvas.Fill.Color := PlayerColors[Owner] and $2FFFFFFF;
-        Canvas.FillRect(RectF(P1.X + 5, P1.Y + 5, P2.X - 5, P2.Y - 5), 4, 4, [], 1);
-        Canvas.Font.Size := Max(18, CellSize * 0.3);
-        Canvas.Font.Style := [TFontStyle.fsBold];
-        Canvas.Fill.Color := PlayerColors[Owner];
-        Canvas.FillText(RectF(P1.X, P1.Y, P2.X, P2.Y), IntToStr(Owner), False, 1, [],
-          TTextAlign.Center, TTextAlign.Center);
-      end;
-    end;
+  for I := 0 to High(FCells) do
+    DrawCellFill(FCells[I]);
 
   Canvas.Stroke.Kind := TBrushKind.Solid;
   Canvas.Stroke.Color := GridLineColor;
   Canvas.Stroke.Thickness := 2;
-  for Row := 0 to FDotCount - 1 do
-    for Col := 0 to FDotCount - 2 do
-      Canvas.DrawLine(DotPoint(Row, Col), DotPoint(Row, Col + 1), 1);
-  for Row := 0 to FDotCount - 2 do
-    for Col := 0 to FDotCount - 1 do
-      Canvas.DrawLine(DotPoint(Row, Col), DotPoint(Row + 1, Col), 1);
+  for I := 0 to High(FEdges) do
+  begin
+    P1 := DotPoint(FEdges[I].Dot1);
+    P2 := DotPoint(FEdges[I].Dot2);
+    Canvas.DrawLine(P1, P2, 1);
+  end;
 
-  Canvas.Stroke.Thickness := Max(6, CellSize * 0.08);
-  for Row := 0 to FDotCount - 1 do
-    for Col := 0 to FDotCount - 2 do
-      if FHorizontalLines[Row, Col] > 0 then
-      begin
-        Canvas.Stroke.Color := PlayerColors[FHorizontalLines[Row, Col]];
-        Canvas.DrawLine(DotPoint(Row, Col), DotPoint(Row, Col + 1), 1);
-      end;
-
-  for Row := 0 to FDotCount - 2 do
-    for Col := 0 to FDotCount - 1 do
-      if FVerticalLines[Row, Col] > 0 then
-      begin
-        Canvas.Stroke.Color := PlayerColors[FVerticalLines[Row, Col]];
-        Canvas.DrawLine(DotPoint(Row, Col), DotPoint(Row + 1, Col), 1);
-      end;
-
-  DotRadius := Max(5, CellSize * 0.07);
-  Canvas.Fill.Color := DotColor;
-  for Row := 0 to FDotCount - 1 do
-    for Col := 0 to FDotCount - 1 do
+  Canvas.Stroke.Thickness := Max(5, CellSize * 0.07);
+  for I := 0 to High(FEdges) do
+    if FEdges[I].Owner > 0 then
     begin
-      Center := DotPoint(Row, Col);
-      Canvas.FillEllipse(RectF(Center.X - DotRadius, Center.Y - DotRadius,
-        Center.X + DotRadius, Center.Y + DotRadius), 1);
+      Canvas.Stroke.Color := PlayerColors[FEdges[I].Owner];
+      P1 := DotPoint(FEdges[I].Dot1);
+      P2 := DotPoint(FEdges[I].Dot2);
+      Canvas.DrawLine(P1, P2, 1);
     end;
+
+  DotRadius := Max(4, CellSize * 0.055);
+  Canvas.Fill.Color := DotColor;
+  for I := 0 to High(FDots) do
+  begin
+    Center := DotPoint(I);
+    Canvas.FillEllipse(RectF(Center.X - DotRadius, Center.Y - DotRadius,
+      Center.X + DotRadius, Center.Y + DotRadius), 1);
+  end;
 end;
 
 function TForm51.IsAITurn: Boolean;
@@ -314,162 +525,76 @@ end;
 
 function TForm51.IsGameOver: Boolean;
 begin
-  Result := FScores[1] + FScores[2] = FBoxCount * FBoxCount;
-end;
-
-function TForm51.IsLineClaimed(const AKind: TLineKind; const ARow, ACol: Integer): Boolean;
-begin
-  case AKind of
-    lkHorizontal:
-      Result := FHorizontalLines[ARow, ACol] > 0;
-    lkVertical:
-      Result := FVerticalLines[ARow, ACol] > 0;
-  else
-    Result := False;
-  end;
+  Result := FScores[1] + FScores[2] = Length(FCells);
 end;
 
 function TForm51.LineAlreadyClaimed(const AMove: TMoveTarget): Boolean;
 begin
-  Result := IsLineClaimed(AMove.Kind, AMove.Row, AMove.Col);
+  Result := (AMove.EdgeIndex < 0) or (AMove.EdgeIndex > High(FEdges)) or (FEdges[AMove.EdgeIndex].Owner > 0);
 end;
 
 function TForm51.FindMoveAt(const APoint: TPointF; out AMove: TMoveTarget): Boolean;
 var
-  R: TRectF;
-  Step: Single;
-  Tolerance: Single;
-  Row: Integer;
-  Col: Integer;
-  Candidate: TMoveTarget;
+  I: Integer;
   Distance: Single;
+  Tolerance: Single;
 begin
   Result := False;
-  AMove.Kind := lkNone;
-  AMove.Row := -1;
-  AMove.Col := -1;
+  AMove.EdgeIndex := -1;
   AMove.Distance := MaxSingle;
+  Tolerance := Max(14, CellSize * 0.18);
 
-  R := BoardRect;
-  Step := R.Width / FBoxCount;
-  Tolerance := Max(16, Step * 0.22);
-
-  Row := Round((APoint.Y - R.Top) / Step);
-  if (Row >= 0) and (Row < FDotCount) and (APoint.X >= R.Left) and (APoint.X <= R.Right) then
-  begin
-    Col := Floor((APoint.X - R.Left) / Step);
-    if (Col >= 0) and (Col < FDotCount - 1) then
+  for I := 0 to High(FEdges) do
+    if FEdges[I].Owner = 0 then
     begin
-      Distance := Abs(APoint.Y - (R.Top + Row * Step));
-      if Distance <= Tolerance then
+      Distance := DistanceToSegment(APoint, DotPoint(FEdges[I].Dot1), DotPoint(FEdges[I].Dot2));
+      if (Distance <= Tolerance) and (Distance < AMove.Distance) then
       begin
-        Candidate.Kind := lkHorizontal;
-        Candidate.Row := Row;
-        Candidate.Col := Col;
-        Candidate.Distance := Distance;
-        if not LineAlreadyClaimed(Candidate) then
-        begin
-          AMove := Candidate;
-          Result := True;
-        end;
+        AMove.EdgeIndex := I;
+        AMove.Distance := Distance;
+        Result := True;
       end;
     end;
-  end;
+end;
 
-  Col := Round((APoint.X - R.Left) / Step);
-  if (Col >= 0) and (Col < FDotCount) and (APoint.Y >= R.Top) and (APoint.Y <= R.Bottom) then
+function TForm51.CellSidesClaimed(const ACellIndex: Integer; const AMove: TMoveTarget): Integer;
+var
+  I: Integer;
+  EdgeIndex: Integer;
+begin
+  Result := 0;
+  for I := 0 to FCells[ACellIndex].EdgeCount - 1 do
   begin
-    Row := Floor((APoint.Y - R.Top) / Step);
-    if (Row >= 0) and (Row < FDotCount - 1) then
-    begin
-      Distance := Abs(APoint.X - (R.Left + Col * Step));
-      if (Distance <= Tolerance) and ((not Result) or (Distance < AMove.Distance)) then
-      begin
-        Candidate.Kind := lkVertical;
-        Candidate.Row := Row;
-        Candidate.Col := Col;
-        Candidate.Distance := Distance;
-        if not LineAlreadyClaimed(Candidate) then
-        begin
-          AMove := Candidate;
-          Result := True;
-        end;
-      end;
-    end;
+    EdgeIndex := FCells[ACellIndex].Edges[I];
+    if (FEdges[EdgeIndex].Owner > 0) or (EdgeIndex = AMove.EdgeIndex) then
+      Inc(Result);
   end;
 end;
 
-function TForm51.CountBoxSides(const ARow, ACol: Integer; const AMove: TMoveTarget): Integer;
+function TForm51.CountCompletedCellsForMove(const AMove: TMoveTarget): Integer;
+var
+  I: Integer;
 begin
   Result := 0;
-  if (ARow < 0) or (ARow >= FBoxCount) or (ACol < 0) or (ACol >= FBoxCount) then
-    Exit;
-
-  if (FHorizontalLines[ARow, ACol] > 0)
-    or ((AMove.Kind = lkHorizontal) and (AMove.Row = ARow) and (AMove.Col = ACol)) then
-    Inc(Result);
-  if (FHorizontalLines[ARow + 1, ACol] > 0)
-    or ((AMove.Kind = lkHorizontal) and (AMove.Row = ARow + 1) and (AMove.Col = ACol)) then
-    Inc(Result);
-  if (FVerticalLines[ARow, ACol] > 0)
-    or ((AMove.Kind = lkVertical) and (AMove.Row = ARow) and (AMove.Col = ACol)) then
-    Inc(Result);
-  if (FVerticalLines[ARow, ACol + 1] > 0)
-    or ((AMove.Kind = lkVertical) and (AMove.Row = ARow) and (AMove.Col = ACol + 1)) then
-    Inc(Result);
+  for I := 0 to High(FCells) do
+    if (FCells[I].Owner = 0) and (CellSidesClaimed(I, AMove) = FCells[I].EdgeCount) then
+      Inc(Result);
 end;
 
-function TForm51.CountCompletedBoxesForMove(const AMove: TMoveTarget): Integer;
-begin
-  Result := 0;
-  case AMove.Kind of
-    lkHorizontal:
-      begin
-        if (AMove.Row > 0) and (FBoxOwners[AMove.Row - 1, AMove.Col] = 0)
-          and (CountBoxSides(AMove.Row - 1, AMove.Col, AMove) = 4) then
-          Inc(Result);
-        if (AMove.Row < FBoxCount) and (FBoxOwners[AMove.Row, AMove.Col] = 0)
-          and (CountBoxSides(AMove.Row, AMove.Col, AMove) = 4) then
-          Inc(Result);
-      end;
-    lkVertical:
-      begin
-        if (AMove.Col > 0) and (FBoxOwners[AMove.Row, AMove.Col - 1] = 0)
-          and (CountBoxSides(AMove.Row, AMove.Col - 1, AMove) = 4) then
-          Inc(Result);
-        if (AMove.Col < FBoxCount) and (FBoxOwners[AMove.Row, AMove.Col] = 0)
-          and (CountBoxSides(AMove.Row, AMove.Col, AMove) = 4) then
-          Inc(Result);
-      end;
-  end;
-end;
-
-function TForm51.MoveCreatesThreeSidedBox(const AMove: TMoveTarget): Boolean;
+function TForm51.MoveCreatesAlmostCompleteCell(const AMove: TMoveTarget): Boolean;
+var
+  I: Integer;
 begin
   Result := False;
-  case AMove.Kind of
-    lkHorizontal:
-      begin
-        Result := ((AMove.Row > 0) and (FBoxOwners[AMove.Row - 1, AMove.Col] = 0)
-          and (CountBoxSides(AMove.Row - 1, AMove.Col, AMove) = 3))
-          or ((AMove.Row < FBoxCount) and (FBoxOwners[AMove.Row, AMove.Col] = 0)
-          and (CountBoxSides(AMove.Row, AMove.Col, AMove) = 3));
-      end;
-    lkVertical:
-      begin
-        Result := ((AMove.Col > 0) and (FBoxOwners[AMove.Row, AMove.Col - 1] = 0)
-          and (CountBoxSides(AMove.Row, AMove.Col - 1, AMove) = 3))
-          or ((AMove.Col < FBoxCount) and (FBoxOwners[AMove.Row, AMove.Col] = 0)
-          and (CountBoxSides(AMove.Row, AMove.Col, AMove) = 3));
-      end;
-  end;
+  for I := 0 to High(FCells) do
+    if (FCells[I].Owner = 0) and (CellSidesClaimed(I, AMove) = FCells[I].EdgeCount - 1) then
+      Exit(True);
 end;
 
 function TForm51.FindAIMove(out AMove: TMoveTarget): Boolean;
 var
   Candidate: TMoveTarget;
-  Row: Integer;
-  Col: Integer;
+  I: Integer;
   CandidateScore: Integer;
   BestScore: Integer;
   PickCount: Integer;
@@ -481,7 +606,7 @@ var
     if LineAlreadyClaimed(AMoveToConsider) then
       Exit;
 
-    CandidateScore := CountCompletedBoxesForMove(AMoveToConsider);
+    CandidateScore := CountCompletedCellsForMove(AMoveToConsider);
     if CandidateScore > 0 then
     begin
       if CandidateScore > BestScore then
@@ -502,7 +627,7 @@ var
     if BestScore > 0 then
       Exit;
 
-    SafeMove := not MoveCreatesThreeSidedBox(AMoveToConsider);
+    SafeMove := not MoveCreatesAlmostCompleteCell(AMoveToConsider);
     if ARequireSafe and (not SafeMove) then
       Exit;
 
@@ -512,100 +637,59 @@ var
   end;
 
 begin
-  AMove.Kind := lkNone;
-  AMove.Row := -1;
-  AMove.Col := -1;
+  AMove.EdgeIndex := -1;
   AMove.Distance := 0;
   BestScore := 0;
   PickCount := 0;
 
-  for Row := 0 to FDotCount - 1 do
-    for Col := 0 to FDotCount - 2 do
-    begin
-      Candidate.Kind := lkHorizontal;
-      Candidate.Row := Row;
-      Candidate.Col := Col;
-      Candidate.Distance := 0;
-      ConsiderMove(Candidate, True);
-    end;
-
-  for Row := 0 to FDotCount - 2 do
-    for Col := 0 to FDotCount - 1 do
-    begin
-      Candidate.Kind := lkVertical;
-      Candidate.Row := Row;
-      Candidate.Col := Col;
-      Candidate.Distance := 0;
-      ConsiderMove(Candidate, True);
-    end;
-
-  if PickCount = 0 then
+  for I := 0 to High(FEdges) do
   begin
-    for Row := 0 to FDotCount - 1 do
-      for Col := 0 to FDotCount - 2 do
-      begin
-        Candidate.Kind := lkHorizontal;
-        Candidate.Row := Row;
-        Candidate.Col := Col;
-        Candidate.Distance := 0;
-        ConsiderMove(Candidate, False);
-      end;
-
-    for Row := 0 to FDotCount - 2 do
-      for Col := 0 to FDotCount - 1 do
-      begin
-        Candidate.Kind := lkVertical;
-        Candidate.Row := Row;
-        Candidate.Col := Col;
-        Candidate.Distance := 0;
-        ConsiderMove(Candidate, False);
-      end;
+    Candidate.EdgeIndex := I;
+    Candidate.Distance := 0;
+    ConsiderMove(Candidate, True);
   end;
 
-  Result := AMove.Kind <> lkNone;
+  if PickCount = 0 then
+    for I := 0 to High(FEdges) do
+    begin
+      Candidate.EdgeIndex := I;
+      Candidate.Distance := 0;
+      ConsiderMove(Candidate, False);
+    end;
+
+  Result := AMove.EdgeIndex >= 0;
 end;
 
-function TForm51.TryCompleteBox(const ARow, ACol: Integer): Boolean;
+function TForm51.TryCompleteCell(const ACellIndex: Integer): Boolean;
+var
+  EmptyMove: TMoveTarget;
 begin
   Result := False;
-  if (ARow < 0) or (ARow >= FBoxCount) or (ACol < 0) or (ACol >= FBoxCount) then
+  if (ACellIndex < 0) or (ACellIndex > High(FCells)) or (FCells[ACellIndex].Owner <> 0) then
     Exit;
 
-  if FBoxOwners[ARow, ACol] <> 0 then
-    Exit;
-
-  if (FHorizontalLines[ARow, ACol] > 0)
-    and (FHorizontalLines[ARow + 1, ACol] > 0)
-    and (FVerticalLines[ARow, ACol] > 0)
-    and (FVerticalLines[ARow, ACol + 1] > 0) then
+  EmptyMove.EdgeIndex := -1;
+  EmptyMove.Distance := 0;
+  if CellSidesClaimed(ACellIndex, EmptyMove) = FCells[ACellIndex].EdgeCount then
   begin
-    FBoxOwners[ARow, ACol] := FCurrentPlayer;
+    FCells[ACellIndex].Owner := FCurrentPlayer;
     Inc(FScores[FCurrentPlayer]);
     Result := True;
   end;
 end;
 
 function TForm51.ClaimLine(const AMove: TMoveTarget): Integer;
+var
+  I: Integer;
 begin
   Result := 0;
-  case AMove.Kind of
-    lkHorizontal:
-      begin
-        FHorizontalLines[AMove.Row, AMove.Col] := FCurrentPlayer;
-        if TryCompleteBox(AMove.Row - 1, AMove.Col) then
-          Inc(Result);
-        if TryCompleteBox(AMove.Row, AMove.Col) then
-          Inc(Result);
-      end;
-    lkVertical:
-      begin
-        FVerticalLines[AMove.Row, AMove.Col] := FCurrentPlayer;
-        if TryCompleteBox(AMove.Row, AMove.Col - 1) then
-          Inc(Result);
-        if TryCompleteBox(AMove.Row, AMove.Col) then
-          Inc(Result);
-      end;
-  end;
+  if LineAlreadyClaimed(AMove) then
+    Exit;
+
+  FEdges[AMove.EdgeIndex].Owner := FCurrentPlayer;
+  for I := 0 to High(FCells) do
+    if TryCompleteCell(I) then
+      Inc(Result);
 end;
 
 procedure TForm51.SwitchPlayer;
@@ -623,13 +707,20 @@ begin
   NewGame;
 end;
 
+procedure TForm51.SetBoardStyle(const AStyle: TBoardStyle);
+begin
+  if FBoardStyle <> AStyle then
+  begin
+    FBoardStyle := AStyle;
+    NewGame;
+  end;
+end;
+
 procedure TForm51.NewGame;
 begin
   if FAITimer <> nil then
     FAITimer.Enabled := False;
-  FillChar(FHorizontalLines, SizeOf(FHorizontalLines), 0);
-  FillChar(FVerticalLines, SizeOf(FVerticalLines), 0);
-  FillChar(FBoxOwners, SizeOf(FBoxOwners), 0);
+  BuildBoard;
   FScores[1] := 0;
   FScores[2] := 0;
   FCurrentPlayer := 1;
@@ -645,7 +736,7 @@ end;
 procedure TForm51.AITimer(Sender: TObject);
 var
   Move: TMoveTarget;
-  CompletedBoxes: Integer;
+  CompletedCells: Integer;
 begin
   FAITimer.Enabled := False;
   if not IsAITurn then
@@ -653,8 +744,8 @@ begin
 
   if FindAIMove(Move) then
   begin
-    CompletedBoxes := ClaimLine(Move);
-    if CompletedBoxes = 0 then
+    CompletedCells := ClaimLine(Move);
+    if CompletedCells = 0 then
       SwitchPlayer;
     Invalidate;
     QueueAITurn;
@@ -664,7 +755,7 @@ end;
 procedure TForm51.MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Single);
 var
   Move: TMoveTarget;
-  CompletedBoxes: Integer;
+  CompletedCells: Integer;
   ClickPoint: TPointF;
 begin
   inherited;
@@ -705,13 +796,25 @@ begin
     Exit;
   end;
 
+  if FSquareStyleRect.Contains(ClickPoint) then
+  begin
+    SetBoardStyle(bsSquares);
+    Exit;
+  end;
+
+  if FHexStyleRect.Contains(ClickPoint) then
+  begin
+    SetBoardStyle(bsHexagons);
+    Exit;
+  end;
+
   if IsGameOver or IsAITurn then
     Exit;
 
   if FindMoveAt(ClickPoint, Move) then
   begin
-    CompletedBoxes := ClaimLine(Move);
-    if CompletedBoxes = 0 then
+    CompletedCells := ClaimLine(Move);
+    if CompletedCells = 0 then
       SwitchPlayer;
     Invalidate;
     QueueAITurn;
