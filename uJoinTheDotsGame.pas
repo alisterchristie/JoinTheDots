@@ -64,7 +64,11 @@ type
     function IsGameOver: Boolean;
     function LineAlreadyClaimed(const AMove: TMoveTarget): Boolean;
     function Score(const APlayer: Integer): Integer;
+    function SerializedCellOwners: string;
+    function SerializedEdgeOwners: string;
+    procedure ApplySerializedOwners(const AEdgeOwners, ACellOwners: string);
     procedure NewGame;
+    procedure SetCurrentPlayer(const APlayer: Integer);
     procedure SetBoardStyle(const AStyle: TBoardStyle);
     procedure SetGridSize(const ADotCount: Integer);
     procedure SwitchPlayer;
@@ -386,6 +390,31 @@ begin
   Result := (AMove.EdgeIndex < 0) or (AMove.EdgeIndex > High(FEdges)) or (FEdges[AMove.EdgeIndex].Owner > 0);
 end;
 
+procedure TJoinTheDotsGame.ApplySerializedOwners(const AEdgeOwners, ACellOwners: string);
+var
+  I: Integer;
+begin
+  FScores[1] := 0;
+  FScores[2] := 0;
+
+  for I := 0 to High(FEdges) do
+    if I + 1 <= Length(AEdgeOwners) then
+      FEdges[I].Owner := EnsureRange(Ord(AEdgeOwners[I + 1]) - Ord('0'), 0, PlayerCount)
+    else
+      FEdges[I].Owner := 0;
+
+  for I := 0 to High(FCells) do
+  begin
+    if I + 1 <= Length(ACellOwners) then
+      FCells[I].Owner := EnsureRange(Ord(ACellOwners[I + 1]) - Ord('0'), 0, PlayerCount)
+    else
+      FCells[I].Owner := 0;
+
+    if FCells[I].Owner in [1..PlayerCount] then
+      Inc(FScores[FCells[I].Owner]);
+  end;
+end;
+
 function TJoinTheDotsGame.MoveCreatesAlmostCompleteCell(const AMove: TMoveTarget): Boolean;
 var
   I: Integer;
@@ -410,6 +439,29 @@ begin
     Result := FScores[APlayer]
   else
     Result := 0;
+end;
+
+function TJoinTheDotsGame.SerializedCellOwners: string;
+var
+  I: Integer;
+begin
+  SetLength(Result, Length(FCells));
+  for I := 0 to High(FCells) do
+    Result[I + 1] := Chr(Ord('0') + FCells[I].Owner);
+end;
+
+function TJoinTheDotsGame.SerializedEdgeOwners: string;
+var
+  I: Integer;
+begin
+  SetLength(Result, Length(FEdges));
+  for I := 0 to High(FEdges) do
+    Result[I + 1] := Chr(Ord('0') + FEdges[I].Owner);
+end;
+
+procedure TJoinTheDotsGame.SetCurrentPlayer(const APlayer: Integer);
+begin
+  FCurrentPlayer := EnsureRange(APlayer, 1, PlayerCount);
 end;
 
 procedure TJoinTheDotsGame.SetBoardStyle(const AStyle: TBoardStyle);

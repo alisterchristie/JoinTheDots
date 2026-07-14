@@ -8,6 +8,7 @@ Players take turns claiming lines between adjacent dots. When a player completes
 
 - Two-player local play
 - Optional AI opponent
+- LAN network multiplayer with local discovery
 - Small, medium, and large board sizes
 - Square and hexagon board styles
 - Player-colored lines and claimed squares
@@ -33,4 +34,5 @@ The project was built as an FMX application and currently targets the RAD Studio
 - `JoinTheDots.dproj` - RAD Studio project file
 - `formJoinTheDots.pas` - FireMonkey form, drawing, input handling, and AI timer
 - `uJoinTheDotsGame.pas` - board generation, game state, scoring, and AI move selection
+- `uJoinTheDotsNetwork.pas` - LAN discovery and peer-to-peer move messages
 - `formJoinTheDots.fmx` - main form resource

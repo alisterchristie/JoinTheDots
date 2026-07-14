@@ -6,9 +6,11 @@ uses
   System.SysUtils, System.Types, System.UITypes, System.Classes, System.Variants,
   System.Math,
   FMX.Types, FMX.Controls, FMX.Forms, FMX.Graphics, FMX.Dialogs,
-  uJoinTheDotsGame;
+  uJoinTheDotsGame, uJoinTheDotsNetwork;
 
 type
+  TPlayMode = (pmAI, pmLocal, pmNetwork);
+
   TForm51 = class(TForm)
   private
     FGame: TJoinTheDotsGame;
@@ -19,7 +21,12 @@ type
     FLargeGridRect: TRectF;
     FSquareStyleRect: TRectF;
     FHexStyleRect: TRectF;
-    FPlayAgainstAI: Boolean;
+    FHostLANRect: TRectF;
+    FJoinLANRect: TRectF;
+    FNetwork: TJoinTheDotsNetwork;
+    FNetworkPollTimer: TTimer;
+    FNetworkStatus: string;
+    FPlayMode: TPlayMode;
     FAITimer: TTimer;
     function BoardRect: TRectF;
     function CellSize: Single;
@@ -27,14 +34,19 @@ type
     function DotPoint(const ADotIndex: Integer): TPointF;
     function FindMoveAt(const APoint: TPointF; out AMove: TMoveTarget): Boolean;
     function IsAITurn: Boolean;
+    function IsLocalNetworkTurn: Boolean;
     procedure AITimer(Sender: TObject);
     procedure DrawBoard;
     procedure DrawButton(const ARect: TRectF; const AText: string; const ASelected: Boolean);
     procedure DrawCellFill(const ACell: TBoardCell);
     procedure DrawScoreboard;
     procedure FormPaint(Sender: TObject; Canvas: TCanvas; const ARect: TRectF);
+    procedure NetworkMessage(Sender: TObject; const AMessage: string);
+    procedure NetworkPollTimer(Sender: TObject);
+    procedure NetworkStatus(Sender: TObject; const AStatus: string);
     procedure NewGame;
     procedure QueueAITurn;
+    procedure SendNetworkState;
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
@@ -69,7 +81,18 @@ begin
   Randomize;
 
   FGame := TJoinTheDotsGame.Create;
-  FPlayAgainstAI := True;
+  FPlayMode := pmAI;
+  FNetworkStatus := 'Network idle';
+
+  FNetwork := TJoinTheDotsNetwork.Create(Self);
+  FNetwork.PlayerName := Format('Player-%d', [Random(9000) + 1000]);
+  FNetwork.OnMessage := NetworkMessage;
+  FNetwork.OnStatus := NetworkStatus;
+
+  FNetworkPollTimer := TTimer.Create(Self);
+  FNetworkPollTimer.Enabled := True;
+  FNetworkPollTimer.Interval := 100;
+  FNetworkPollTimer.OnTimer := NetworkPollTimer;
 
   FAITimer := TTimer.Create(Self);
   FAITimer.Enabled := False;
@@ -82,6 +105,8 @@ end;
 destructor TForm51.Destroy;
 begin
   FAITimer.Enabled := False;
+  FNetworkPollTimer.Enabled := False;
+  FNetwork.Disconnect;
   FGame.Free;
   inherited;
 end;
@@ -167,7 +192,21 @@ end;
 
 function TForm51.IsAITurn: Boolean;
 begin
-  Result := FPlayAgainstAI and (FGame.CurrentPlayer = 2) and (not FGame.IsGameOver);
+  Result := (FPlayMode = pmAI) and (FGame.CurrentPlayer = 2) and (not FGame.IsGameOver);
+end;
+
+function TForm51.IsLocalNetworkTurn: Boolean;
+begin
+  if FPlayMode <> pmNetwork then
+    Exit(True);
+
+  if not FNetwork.IsConnected then
+    Exit(False);
+
+  if FNetwork.IsHosting then
+    Result := FGame.CurrentPlayer = 1
+  else
+    Result := FGame.CurrentPlayer = 2;
 end;
 
 procedure TForm51.DrawButton(const ARect: TRectF; const AText: string; const ASelected: Boolean);
@@ -212,13 +251,17 @@ begin
       PlayerText := 'Game over: draw'
     else if FGame.Score(1) > FGame.Score(2) then
       PlayerText := 'Game over: Player 1 wins'
-    else if FPlayAgainstAI then
+    else if FPlayMode = pmAI then
       PlayerText := 'Game over: AI wins'
     else
       PlayerText := 'Game over: Player 2 wins';
   end
   else if IsAITurn then
     PlayerText := 'AI thinking...'
+  else if (FPlayMode = pmNetwork) and (not FNetwork.IsConnected) then
+    PlayerText := 'Network mode: host or join a LAN game'
+  else if (FPlayMode = pmNetwork) and (not IsLocalNetworkTurn) then
+    PlayerText := 'Remote player to move'
   else
     PlayerText := Format('Player %d to move', [FGame.CurrentPlayer]);
 
@@ -234,9 +277,12 @@ begin
       3, 3, [], 1);
     Canvas.Fill.Color := TextColor;
     Canvas.Font.Size := 15;
-    if (I = 2) and FPlayAgainstAI then
+    if (I = 2) and (FPlayMode = pmAI) then
       Canvas.FillText(RectF(PlayerRect.Left + 22, PlayerRect.Top, PlayerRect.Right, PlayerRect.Bottom),
         Format('AI: %d', [FGame.Score(I)]), False, 1, [], TTextAlign.Leading, TTextAlign.Center)
+    else if (FPlayMode = pmNetwork) then
+      Canvas.FillText(RectF(PlayerRect.Left + 22, PlayerRect.Top, PlayerRect.Right, PlayerRect.Bottom),
+        Format('Net P%d: %d', [I, FGame.Score(I)]), False, 1, [], TTextAlign.Leading, TTextAlign.Center)
     else
       Canvas.FillText(RectF(PlayerRect.Left + 22, PlayerRect.Top, PlayerRect.Right, PlayerRect.Bottom),
         Format('P%d: %d', [I, FGame.Score(I)]), False, 1, [], TTextAlign.Leading, TTextAlign.Center);
@@ -249,17 +295,33 @@ begin
   FLargeGridRect := RectF(211, 144, 284, 180);
   FSquareStyleRect := RectF(315, 144, 403, 180);
   FHexStyleRect := RectF(411, 144, 499, 180);
+  FHostLANRect := RectF(507, 144, 595, 180);
+  FJoinLANRect := RectF(603, 144, 691, 180);
 
   DrawButton(FNewGameRect, 'New game', False);
-  if FPlayAgainstAI then
-    DrawButton(FModeRect, 'Vs AI', True)
-  else
-    DrawButton(FModeRect, '2 players', True);
+  case FPlayMode of
+    pmAI:
+      DrawButton(FModeRect, 'Vs AI', True);
+    pmLocal:
+      DrawButton(FModeRect, '2 players', True);
+    pmNetwork:
+      DrawButton(FModeRect, 'Network', True);
+  end;
   DrawButton(FSmallGridRect, 'Small', FGame.DotCount = TJoinTheDotsGame.MinDotCount);
   DrawButton(FMediumGridRect, 'Medium', FGame.DotCount = TJoinTheDotsGame.MediumDotCount);
   DrawButton(FLargeGridRect, 'Large', FGame.DotCount = TJoinTheDotsGame.MaxDotCount);
   DrawButton(FSquareStyleRect, 'Squares', FGame.BoardStyle = bsSquares);
   DrawButton(FHexStyleRect, 'Hexes', FGame.BoardStyle = bsHexagons);
+  if FPlayMode = pmNetwork then
+  begin
+    DrawButton(FHostLANRect, 'Host LAN', FNetwork.IsHosting);
+    DrawButton(FJoinLANRect, 'Join LAN', FNetwork.IsConnected and (not FNetwork.IsHosting));
+    Canvas.Font.Size := 13;
+    Canvas.Font.Style := [];
+    Canvas.Fill.Color := MutedTextColor;
+    Canvas.FillText(RectF(32, 184, ClientWidth - 32, 210), FNetworkStatus, False, 1, [],
+      TTextAlign.Leading, TTextAlign.Center);
+  end;
 end;
 
 procedure TForm51.DrawCellFill(const ACell: TBoardCell);
@@ -388,11 +450,73 @@ begin
   end;
 end;
 
+procedure TForm51.NetworkMessage(Sender: TObject; const AMessage: string);
+var
+  CompletedCells: Integer;
+  DotCount: Integer;
+  Move: TMoveTarget;
+  Parts: TArray<string>;
+  Style: TBoardStyle;
+begin
+  Parts := AMessage.Split(['|']);
+  if Length(Parts) = 0 then
+    Exit;
+
+  if Parts[0] = 'PEER_CONNECTED' then
+  begin
+    if (FPlayMode = pmNetwork) and FNetwork.IsHosting then
+      SendNetworkState;
+    Exit;
+  end;
+
+  if (Parts[0] = 'START') and (Length(Parts) >= 6) then
+  begin
+    if SameText(Parts[1], 'HEX') then
+      Style := bsHexagons
+    else
+      Style := bsSquares;
+    DotCount := StrToIntDef(Parts[2], TJoinTheDotsGame.MediumDotCount);
+
+    FGame.SetBoardStyle(Style);
+    FGame.SetGridSize(DotCount);
+    FGame.ApplySerializedOwners(Parts[3], Parts[4]);
+    FGame.SetCurrentPlayer(StrToIntDef(Parts[5], 1));
+    FNetworkStatus := 'Network game synchronized';
+    Invalidate;
+    Exit;
+  end;
+
+  if (Parts[0] = 'MOVE') and (Length(Parts) >= 2) then
+  begin
+    Move.EdgeIndex := StrToIntDef(Parts[1], -1);
+    Move.Distance := 0;
+    if not FGame.LineAlreadyClaimed(Move) then
+    begin
+      CompletedCells := FGame.ClaimLine(Move);
+      if CompletedCells = 0 then
+        FGame.SwitchPlayer;
+      Invalidate;
+    end;
+  end;
+end;
+
+procedure TForm51.NetworkPollTimer(Sender: TObject);
+begin
+  FNetwork.PollEvents;
+end;
+
+procedure TForm51.NetworkStatus(Sender: TObject; const AStatus: string);
+begin
+  FNetworkStatus := AStatus;
+  Invalidate;
+end;
+
 procedure TForm51.MouseDown(Button: TMouseButton; Shift: TShiftState; X, Y: Single);
 var
   Move: TMoveTarget;
   CompletedCells: Integer;
   ClickPoint: TPointF;
+  Peer: TNetworkPeer;
 begin
   inherited;
 
@@ -409,8 +533,39 @@ begin
 
   if FModeRect.Contains(ClickPoint) then
   begin
-    FPlayAgainstAI := not FPlayAgainstAI;
+    case FPlayMode of
+      pmAI:
+        FPlayMode := pmLocal;
+      pmLocal:
+        begin
+          FPlayMode := pmNetwork;
+          FNetwork.StartDiscovery;
+        end;
+      pmNetwork:
+        FPlayMode := pmAI;
+    end;
     NewGame;
+    Exit;
+  end;
+
+  if (FPlayMode = pmNetwork) and FHostLANRect.Contains(ClickPoint) then
+  begin
+    FNetwork.StartHosting;
+    NewGame;
+    SendNetworkState;
+    Exit;
+  end;
+
+  if (FPlayMode = pmNetwork) and FJoinLANRect.Contains(ClickPoint) then
+  begin
+    if FNetwork.FirstPeer(Peer) then
+    begin
+      FNetwork.ConnectToPeer(Peer);
+      FNetworkStatus := 'Connected to ' + Peer.Name;
+    end
+    else
+      FNetworkStatus := 'No LAN players found yet';
+    Invalidate;
     Exit;
   end;
 
@@ -418,6 +573,8 @@ begin
   begin
     FGame.SetGridSize(TJoinTheDotsGame.MinDotCount);
     NewGame;
+    if (FPlayMode = pmNetwork) and FNetwork.IsHosting then
+      SendNetworkState;
     Exit;
   end;
 
@@ -425,6 +582,8 @@ begin
   begin
     FGame.SetGridSize(TJoinTheDotsGame.MediumDotCount);
     NewGame;
+    if (FPlayMode = pmNetwork) and FNetwork.IsHosting then
+      SendNetworkState;
     Exit;
   end;
 
@@ -432,6 +591,8 @@ begin
   begin
     FGame.SetGridSize(TJoinTheDotsGame.MaxDotCount);
     NewGame;
+    if (FPlayMode = pmNetwork) and FNetwork.IsHosting then
+      SendNetworkState;
     Exit;
   end;
 
@@ -439,6 +600,8 @@ begin
   begin
     FGame.SetBoardStyle(bsSquares);
     NewGame;
+    if (FPlayMode = pmNetwork) and FNetwork.IsHosting then
+      SendNetworkState;
     Exit;
   end;
 
@@ -446,10 +609,12 @@ begin
   begin
     FGame.SetBoardStyle(bsHexagons);
     NewGame;
+    if (FPlayMode = pmNetwork) and FNetwork.IsHosting then
+      SendNetworkState;
     Exit;
   end;
 
-  if FGame.IsGameOver or IsAITurn then
+  if FGame.IsGameOver or IsAITurn or ((FPlayMode = pmNetwork) and (not IsLocalNetworkTurn)) then
     Exit;
 
   if FindMoveAt(ClickPoint, Move) then
@@ -457,9 +622,24 @@ begin
     CompletedCells := FGame.ClaimLine(Move);
     if CompletedCells = 0 then
       FGame.SwitchPlayer;
+    if FPlayMode = pmNetwork then
+      FNetwork.SendMessage(Format('MOVE|%d', [Move.EdgeIndex]));
     Invalidate;
     QueueAITurn;
   end;
+end;
+
+procedure TForm51.SendNetworkState;
+var
+  StyleText: string;
+begin
+  if FGame.BoardStyle = bsHexagons then
+    StyleText := 'HEX'
+  else
+    StyleText := 'SQUARE';
+
+  FNetwork.SendMessage(Format('START|%s|%d|%s|%s|%d',
+    [StyleText, FGame.DotCount, FGame.SerializedEdgeOwners, FGame.SerializedCellOwners, FGame.CurrentPlayer]));
 end;
 
 procedure TForm51.FormPaint(Sender: TObject; Canvas: TCanvas; const ARect: TRectF);
