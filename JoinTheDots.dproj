@@ -250,6 +250,7 @@
             <Form>Form51</Form>
             <FormType>fmx</FormType>
         </DCCReference>
+        <DCCReference Include="uJoinTheDotsGame.pas"/>
         <BuildConfiguration Include="Base">
             <Key>Base</Key>
         </BuildConfiguration>

@@ -31,5 +31,6 @@ The project was built as an FMX application and currently targets the RAD Studio
 
 - `JoinTheDots.dpr` - application entry point
 - `JoinTheDots.dproj` - RAD Studio project file
-- `formJoinTheDots.pas` - board generation, game state, drawing, input handling, and AI
+- `formJoinTheDots.pas` - FireMonkey form, drawing, input handling, and AI timer
+- `uJoinTheDotsGame.pas` - board generation, game state, scoring, and AI move selection
 - `formJoinTheDots.fmx` - main form resource
