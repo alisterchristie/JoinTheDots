@@ -1,0 +1,48 @@
+﻿<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+    <PropertyGroup>
+        <ProjectGuid>{ADD3C85F-5027-4089-B498-423C90A84A2C}</ProjectGuid>
+    </PropertyGroup>
+    <ItemGroup>
+        <Projects Include="JoinTheDots.dproj">
+            <Dependencies/>
+        </Projects>
+        <Projects Include="DUnitX\JoinTheDotsTests.dproj">
+            <Dependencies/>
+        </Projects>
+    </ItemGroup>
+    <ProjectExtensions>
+        <Borland.Personality>Default.Personality.12</Borland.Personality>
+        <Borland.ProjectType/>
+        <BorlandProject>
+            <Default.Personality/>
+        </BorlandProject>
+    </ProjectExtensions>
+    <Target Name="JoinTheDots">
+        <MSBuild Projects="JoinTheDots.dproj"/>
+    </Target>
+    <Target Name="JoinTheDots:Clean">
+        <MSBuild Projects="JoinTheDots.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="JoinTheDots:Make">
+        <MSBuild Projects="JoinTheDots.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="JoinTheDotsTests">
+        <MSBuild Projects="DUnitX\JoinTheDotsTests.dproj"/>
+    </Target>
+    <Target Name="JoinTheDotsTests:Clean">
+        <MSBuild Projects="DUnitX\JoinTheDotsTests.dproj" Targets="Clean"/>
+    </Target>
+    <Target Name="JoinTheDotsTests:Make">
+        <MSBuild Projects="DUnitX\JoinTheDotsTests.dproj" Targets="Make"/>
+    </Target>
+    <Target Name="Build">
+        <CallTarget Targets="JoinTheDots;JoinTheDotsTests"/>
+    </Target>
+    <Target Name="Clean">
+        <CallTarget Targets="JoinTheDots:Clean;JoinTheDotsTests:Clean"/>
+    </Target>
+    <Target Name="Make">
+        <CallTarget Targets="JoinTheDots:Make;JoinTheDotsTests:Make"/>
+    </Target>
+    <Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
+</Project>
