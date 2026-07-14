@@ -13,7 +13,9 @@ uses
   DUnitX.Loggers.Xml.NUnit,
   {$ENDIF }
   DUnitX.TestFramework,
-  DemoUnitTests in 'DemoUnitTests.pas';
+  DemoUnitTests in 'DemoUnitTests.pas',
+  TestuJoinTheDotsGame in 'TestuJoinTheDotsGame.pas',
+  uJoinTheDotsGame in '..\uJoinTheDotsGame.pas';
 
 { keep comment here to protect the following conditional from being removed by the IDE when adding a unit }
 {$IFNDEF TESTINSIGHT}
