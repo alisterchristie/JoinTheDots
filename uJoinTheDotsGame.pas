@@ -187,6 +187,11 @@ var
   Center: TPointF;
   Angle: Single;
   NormalizedPoint: TPointF;
+  RawWidth: Single;
+  RawHeight: Single;
+  RawSize: Single;
+  OffsetX: Single;
+  OffsetY: Single;
 begin
   SetLength(RawCells, FBoxCount * FBoxCount);
   MinX := MaxSingle;
@@ -219,18 +224,24 @@ begin
       end;
     end;
 
+  RawWidth := MaxX - MinX;
+  RawHeight := MaxY - MinY;
+  RawSize := Max(RawWidth, RawHeight);
+  OffsetX := (RawSize - RawWidth) / 2;
+  OffsetY := (RawSize - RawHeight) / 2;
+
   SetLength(FCells, Length(RawCells));
   for CellIndex := 0 to High(RawCells) do
   begin
     FCells[CellIndex].EdgeCount := 6;
     FCells[CellIndex].Owner := 0;
-    FCells[CellIndex].Center := PointF((RawCells[CellIndex].Center.X - MinX) / (MaxX - MinX),
-      (RawCells[CellIndex].Center.Y - MinY) / (MaxY - MinY));
+    FCells[CellIndex].Center := PointF((RawCells[CellIndex].Center.X - MinX + OffsetX) / RawSize,
+      (RawCells[CellIndex].Center.Y - MinY + OffsetY) / RawSize);
 
     for I := 0 to 5 do
     begin
-      NormalizedPoint := PointF((RawCells[CellIndex].Vertices[I].X - MinX) / (MaxX - MinX),
-        (RawCells[CellIndex].Vertices[I].Y - MinY) / (MaxY - MinY));
+      NormalizedPoint := PointF((RawCells[CellIndex].Vertices[I].X - MinX + OffsetX) / RawSize,
+        (RawCells[CellIndex].Vertices[I].Y - MinY + OffsetY) / RawSize);
       FCells[CellIndex].Dots[I] := AddDot(NormalizedPoint);
     end;
 
